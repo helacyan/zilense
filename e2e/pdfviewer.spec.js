@@ -61,6 +61,50 @@ test('PDF viewer: renders a text layer carrying the PDF’s Chinese text', async
   await page.close()
 })
 
+test('PDF viewer: text-layer spans are sized and hit-testable (pdf.js 6 CSS)', async () => {
+  // Regression for the HSK-PDF bug: without pdf.js 6's --font-height / --scale-x
+  // CSS, spans stay ~16px and overlap, so elementFromPoint at a glyph's center
+  // returns a different span (or non-Han junk). Assert geometry before hover.
+  const page = await context.newPage()
+  await page.goto(viewerUrl())
+  const span = page.locator('.textLayer span').filter({ hasText: /学/ }).first()
+  await expect(span).toBeVisible({ timeout: 30_000 })
+
+  const geom = await span.evaluate((el) => {
+    const cs = getComputedStyle(el)
+    const fontHeight = parseFloat(cs.getPropertyValue('--font-height')) || 0
+    const fontSize = parseFloat(cs.fontSize) || 0
+    const page = el.closest('.page')
+    const scale = page
+      ? (parseFloat(getComputedStyle(page).getPropertyValue('--scale-factor')) || 1)
+      : 1
+    const r = el.getBoundingClientRect()
+    const cx = r.left + r.width / 2
+    const cy = r.top + r.height / 2
+    const top = document.elementFromPoint(cx, cy)
+    return {
+      fontSize,
+      fontHeight,
+      scale,
+      expectedFontSize: fontHeight * scale,
+      hitText: top && (top.textContent || ''),
+      hitIsSelf: top === el || !!(top && el.contains(top)),
+      width: r.width,
+      height: r.height,
+    }
+  })
+  expect(geom.fontHeight, 'span must carry --font-height from TextLayer').toBeGreaterThan(1)
+  // Without the pdf.js 6 CSS, font-size stays the inherited ~16px body size.
+  expect(geom.fontSize, 'font-size must consume --font-height (not ~16px)').toBeGreaterThan(20)
+  expect(Math.abs(geom.fontSize - geom.expectedFontSize),
+    `font-size (${geom.fontSize}) should be --font-height×scale (${geom.expectedFontSize})`)
+    .toBeLessThan(2)
+  expect(geom.width).toBeGreaterThan(8)
+  expect(geom.height).toBeGreaterThan(8)
+  expect(geom.hitIsSelf, `elementFromPoint must hit the 学 span (got “${geom.hitText}”)`).toBe(true)
+  await page.close()
+})
+
 test('PDF viewer: hover paints the token; click pins the word to the panel', async () => {
   let [sw] = context.serviceWorkers()
   if (!sw) sw = await context.waitForEvent('serviceworker')
@@ -79,6 +123,19 @@ test('PDF viewer: hover paints the token; click pins the word to the panel', asy
     .poll(() => page.evaluate(() => 'highlights' in CSS && CSS.highlights.has('mydict-tok')),
       { timeout: 45_000, intervals: [400, 800, 1200] })
     .toBe(true)
+
+  // the inline popup must show a segmented word from the PDF (worker reply path),
+  // not just the highlight. The fixture is one span "学习中文"; hover at the
+  // center often lands on 中文 rather than 学习 — either proves the lookup path.
+  await expect
+    .poll(() => page.evaluate(() => {
+      const host = document.getElementById('mydict-popup-host')
+      if (!host || !host.shadowRoot) return ''
+      // card text only (skip the injected <style> block)
+      const card = host.shadowRoot.querySelector('.card')
+      return card ? card.textContent : host.shadowRoot.textContent
+    }), { timeout: 15_000 })
+    .toMatch(/学习|中文/)
 
   // click → pin → worker `open-panel` → setPendingLookup(word). Reading it back
   // from session storage proves the pin reached the worker with a real Chinese word
