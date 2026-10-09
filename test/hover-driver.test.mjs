@@ -63,6 +63,21 @@ test('hover: paints the token highlight for the longest word under the cursor', 
   driver.destroy()
 })
 
+// Chrome sometimes returns the parent element (not its text child) from
+// caretPositionFromPoint — e.g. a per-character <span> wrapping 我. The driver
+// must still resolve that to the text node and look the character up.
+test('hover: resolves caretPositionFromPoint when it returns the parent element', () => {
+  const sent = recordingChrome()
+  const driver = initHoverDriver()
+  document.body.innerHTML = '<p><span id="t">我</span></p>'
+  const span = document.getElementById('t')
+  document.caretPositionFromPoint = () => ({ offsetNode: span, offset: 0 })
+  document.dispatchEvent(new window.MouseEvent('mousemove', { clientX: 5, clientY: 5, bubbles: true }))
+  assert.ok(globalThis.CSS.highlights.has('mydict-tok'), 'element caret still paints mydict-tok')
+  assert.ok(sent.some((m) => m && m.type === 'hover'), 'element caret still sends hover to the worker')
+  driver.destroy()
+})
+
 test('hover: builds the inline popup with the word, pinyin and gloss', () => {
   stubChrome()
   const driver = initHoverDriver()

@@ -40,6 +40,11 @@ async function renderPage(page, holder) {
   const viewport = page.getViewport({ scale })
   const outputScale = window.devicePixelRatio || 1
 
+  // --scale-factor on the page holder feeds --total-scale-factor (pdfviewer.css)
+  // into the text layer's font-size / width / height calcs. Keep it on the page
+  // so both the layer and any nested markedContent spans inherit it.
+  holder.style.setProperty('--scale-factor', String(scale))
+
   const canvas = document.createElement('canvas')
   canvas.width = Math.floor(viewport.width * outputScale)
   canvas.height = Math.floor(viewport.height * outputScale)
@@ -51,8 +56,8 @@ async function renderPage(page, holder) {
   const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null
   await page.render({ canvasContext: ctx, viewport, transform }).promise
 
-  // the text layer: transparent real <span>s positioned over the glyphs. Its
-  // width/height use calc(var(--scale-factor) * …), so the scale must be set here.
+  // the text layer: transparent real <span>s positioned over the glyphs. Layer
+  // width/height use calc(var(--total-scale-factor) * …) from pdf.js 6.
   const textLayerDiv = document.createElement('div')
   textLayerDiv.className = 'textLayer'
   textLayerDiv.style.setProperty('--scale-factor', String(scale))
@@ -330,6 +335,7 @@ async function loadPdf(target) {
     holder.className = 'page'
     holder.dataset.page = String(n)
     holder.dataset.scale = String(scale)
+    holder.style.setProperty('--scale-factor', String(scale))
     holder.style.width = Math.floor(vp.width) + 'px'
     holder.style.height = Math.floor(vp.height) + 'px'
     viewer.appendChild(holder)
