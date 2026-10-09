@@ -74,6 +74,8 @@ export function initHoverDriver(opts = {}) {
   // caret node/offset under a screen point. caretPositionFromPoint is the standard
   // API and (in current Chrome) accepts a shadowRoots option to descend into open
   // shadow trees; older Chrome falls back to caretRangeFromPoint (no shadow).
+  // When the first API returns an ELEMENT (common for single-char <span>s), we
+  // still try caretRangeFromPoint — Chrome often gives a text node there.
   function caretAt(x, y, shadowRoots) {
     if (document.caretPositionFromPoint) {
       const p = shadowRoots && shadowRoots.length
@@ -88,19 +90,56 @@ export function initHoverDriver(opts = {}) {
     return null
   }
 
+  // Chrome's caretPositionFromPoint sometimes returns the parent element with a
+  // child-index offset instead of the text node (per-character <span>s, PDF.js
+  // text-layer spans). Map that to the text child when possible.
+  function textCaretFromElement(node, offset) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null
+    const kids = node.childNodes
+    if (!kids.length) return null
+    // offset 0 → first child; offset == length → past last child → last child
+    const i = offset >= kids.length ? kids.length - 1 : Math.max(0, offset)
+    const child = kids[i]
+    if (!child || child.nodeType !== Node.TEXT_NODE) return null
+    // past-the-end child index means the caret sits after that child's last char
+    const textOffset = offset >= kids.length ? (child.data || '').length : 0
+    return { node: child, offset: textOffset }
+  }
+
   // resolve the character under a screen point to { node, index, char }
   function charAtPoint(x, y, shadowRoots) {
-    const c = caretAt(x, y, shadowRoots)
-    if (!c) return null
-    const { node, offset } = c
-    if (!node || node.nodeType !== Node.TEXT_NODE) return null
-    const text = node.data
-    // prefer the char to the right of the caret, fall back to the one on the left
-    let idx = -1
-    if (offset < text.length && isHanChar(charAt(text, offset))) idx = offset
-    else if (offset > 0 && isHanChar(charAt(text, offset - 1))) idx = offset - 1
-    if (idx < 0) return null
-    return { node, index: idx, char: charAt(text, idx) }
+    const tryHit = (c) => {
+      if (!c || !c.node) return null
+      let node = c.node
+      let offset = c.offset
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const mapped = textCaretFromElement(node, offset)
+        if (!mapped) return null
+        node = mapped.node
+        offset = mapped.offset
+      }
+      if (node.nodeType !== Node.TEXT_NODE) return null
+      const text = node.data
+      // prefer the char to the right of the caret, fall back to the one on the left
+      let idx = -1
+      if (offset < text.length && isHanChar(charAt(text, offset))) idx = offset
+      else if (offset > 0 && isHanChar(charAt(text, offset - 1))) idx = offset - 1
+      if (idx < 0) return null
+      return { node, index: idx, char: charAt(text, idx) }
+    }
+
+    const primary = caretAt(x, y, shadowRoots)
+    const hit = tryHit(primary)
+    if (hit) return hit
+
+    // caretPositionFromPoint returned an unusable element (or null). Fall through
+    // to caretRangeFromPoint even when the first API exists — it often yields the
+    // text node Chrome's newer API remapped to the parent element.
+    if (document.caretPositionFromPoint && document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y)
+      if (r) return tryHit({ node: r.startContainer, offset: r.startOffset })
+    }
+    return null
   }
 
   const canHighlight = () => 'highlights' in CSS && typeof Highlight !== 'undefined'
